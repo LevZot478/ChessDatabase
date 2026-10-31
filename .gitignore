@@ -1,0 +1,12 @@
+# Настройки IDEA и результаты компиляции
+.idea/
+*.iml
+out/
+*.class
+
+# Рабочие и проверочные базы
+chess-club-db/
+database-check-*/
+players-check-*.dat
+storage-check-*.dat
+index-check-*.idx
