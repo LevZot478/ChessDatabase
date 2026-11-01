@@ -156,6 +156,68 @@ public final class IdIndex implements Closeable {
             file.writeLong(-1);
         }
     }
+    /**
+     * Проверяет, что каждый доступный узел индекса
+     * указывает на существующего участника с соответствующим ID.
+     *
+     * Возвращает количество доступных узлов.
+     */
+    public long validateEntries(PlayerStorage storage) throws IOException {
+        long entries = 0;
+        long totalNodes = (file.length() - DATA_START) / NODE_SIZE;
+
+        for (int bucket = 0; bucket < BUCKETS; bucket++) {
+            long node = readPointer(HEADER_SIZE + bucket * 8L);
+            long remaining = totalNodes;
+
+            while (node != -1) {
+                if (remaining-- <= 0
+                        || node < DATA_START
+                        || node > file.length() - NODE_SIZE
+                        || (node - DATA_START) % NODE_SIZE != 0) {
+                    throw new IOException(
+                            "Повреждена цепочка индекса в корзине " + bucket
+                    );
+                }
+
+                file.seek(node);
+
+                int id = file.readInt();
+                long slot = file.readLong();
+                long next = file.readLong();
+
+                if (id <= 0 || Math.floorMod(id, BUCKETS) != bucket) {
+                    throw new IOException(
+                            "ID находится в неправильной корзине: " + id
+                    );
+                }
+
+                if (slot < 0 || slot >= storage.slotCount()) {
+                    throw new IOException(
+                            "Индекс указывает на несуществующий слот: " + slot
+                    );
+                }
+
+                Player player = storage.read(slot);
+
+                if (player == null || player.getId() != id) {
+                    throw new IOException(
+                            "Индекс не соответствует записи с ID " + id
+                    );
+                }
+
+                entries++;
+                node = next;
+            }
+        }
+
+        return entries;
+    }
+    /**
+     * Проверяет соответствие существующих записей и индекса.
+     * Возвращает количество участников.
+     */
+
     public void save() throws IOException {
         file.getFD().sync();
     }

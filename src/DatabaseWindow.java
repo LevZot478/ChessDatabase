@@ -6,9 +6,11 @@ import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.nio.file.Files;
 
 public final class DatabaseWindow extends JFrame {
-    private final PlayerDatabase database;
+    private PlayerDatabase database;
+    private Path currentDirectory;
 
     private final DefaultTableModel model = new DefaultTableModel(
             new Object[]{"ID", "Имя", "Рейтинг", "Взнос", "Дата", "Активен"}, 0
@@ -26,6 +28,7 @@ public final class DatabaseWindow extends JFrame {
         super("Шахматный клуб — " + directory.toAbsolutePath());
 
         database = new PlayerDatabase(directory);
+        currentDirectory = directory.toRealPath();
 
         setSize(1100, 650);
         setLocationRelativeTo(null);
@@ -38,6 +41,11 @@ public final class DatabaseWindow extends JFrame {
         table.setFillsViewportHeight(true);
 
         JPanel buttons = new JPanel(new GridLayout(0, 4, 6, 6));
+        addButton(buttons, "Создать БД", this::createDatabase);
+        addButton(buttons, "Открыть БД", this::openDatabase);
+        addButton(buttons, "Удалить БД", this::deleteDatabase);
+        addButton(buttons, "Создать backup", this::createBackup);
+        addButton(buttons, "Восстановить backup", this::restoreBackup);
 
         addButton(buttons, "Добавить", this::addPlayer);
         addButton(buttons, "Найти по ID", this::findPlayer);
@@ -50,6 +58,16 @@ public final class DatabaseWindow extends JFrame {
         addButton(buttons, "Сохранить", () -> {
             database.save();
             status.setText("Изменения сохранены");
+        });
+        addButton(buttons, "Проверить БД", () -> {
+            long count = database.validate();
+
+            status.setText("Проверка пройдена. Участников: " + count);
+
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Данные и индекс согласованы.\nУчастников: " + count
+            );
         });
 
         add(buttons, BorderLayout.NORTH);
@@ -189,6 +207,268 @@ public final class DatabaseWindow extends JFrame {
         database.clear();
         refresh();
         status.setText("База очищена");
+    }
+    /**
+     * Предлагает выбрать папку.
+     * Возвращает null при отмене.
+     */
+    private Path chooseDirectory(String title) {
+        Path parent = currentDirectory.getParent();
+
+        JFileChooser chooser = new JFileChooser(
+                (parent == null ? currentDirectory : parent).toFile()
+        );
+
+        chooser.setDialogTitle(title);
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setAcceptAllFileFilterUsed(false);
+
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return null;
+        }
+
+        return chooser.getSelectedFile().toPath();
+    }
+
+    private void createDatabase() throws IOException {
+        Path parent = chooseDirectory(
+                "Выбери папку, внутри которой создать новую базу"
+        );
+
+        if (parent == null) {
+            return;
+        }
+
+        String name = JOptionPane.showInputDialog(
+                this,
+                "Название новой базы: латинские буквы, цифры, _ или -",
+                "club-2"
+        );
+
+        if (name == null) {
+            return;
+        }
+
+        name = name.trim();
+
+        if (!name.matches("[A-Za-z0-9_-]+")) {
+            throw new IllegalArgumentException(
+                    "Используй латинские буквы, цифры, _ или -"
+            );
+        }
+
+        Path target = parent.resolve(name);
+
+        // Создаём именно новую папку.
+        // Если такая уже есть — получим ошибку без перезаписи данных.
+        Files.createDirectory(target);
+
+        switchDatabase(target);
+
+        status.setText("Создана база: " + currentDirectory);
+    }
+
+    private void openDatabase() throws IOException {
+        Path target = chooseDirectory(
+                "Выбери папку существующей базы"
+        );
+
+        if (target == null) {
+            return;
+        }
+
+        // Открытие не должно создавать файлы в произвольной папке.
+        if (!Files.isRegularFile(target.resolve("players.dat"))
+                || !Files.isRegularFile(target.resolve("players-id.idx"))) {
+            throw new IllegalArgumentException(
+                    "В папке должны быть players.dat и players-id.idx"
+            );
+        }
+
+        switchDatabase(target);
+    }
+
+    private void switchDatabase(Path target) throws IOException {
+        Path realTarget = target.toRealPath();
+
+        if (realTarget.equals(currentDirectory)) {
+            status.setText("Эта база уже открыта");
+            return;
+        }
+
+        // Сохраняем текущую базу перед переключением.
+        database.save();
+
+        // Сначала проверяем, что новую базу удаётся открыть.
+        PlayerDatabase next = new PlayerDatabase(realTarget);
+
+        try {
+            database.close();
+        } catch (IOException exception) {
+            try {
+                next.close();
+            } catch (IOException closeException) {
+                exception.addSuppressed(closeException);
+            }
+
+            throw exception;
+        }
+
+        database = next;
+        currentDirectory = realTarget;
+
+        setTitle("Шахматный клуб — " + currentDirectory);
+        refresh();
+
+        status.setText("Открыта база: " + currentDirectory);
+    }
+    private void createBackup() throws IOException {
+        Path parent = chooseDirectory(
+                "Выбери папку для резервной копии"
+        );
+
+        if (parent == null) {
+            return;
+        }
+
+        // Перед копированием сохраняем оба файла.
+        database.save();
+
+        Path archive = DatabaseBackup.create(currentDirectory, parent);
+
+        status.setText("Backup создан: " + archive);
+
+        JOptionPane.showMessageDialog(
+                this,
+                "Резервная копия создана:\n" + archive
+        );
+    }
+
+    private void restoreBackup() throws IOException {
+        JFileChooser chooser = new JFileChooser(
+                currentDirectory.getParent().toFile()
+        );
+
+        chooser.setDialogTitle("Выбери ZIP-файл резервной копии");
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setFileFilter(
+                new javax.swing.filechooser.FileNameExtensionFilter(
+                        "Резервная копия ZIP", "zip"
+                )
+        );
+
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        Path archive = chooser.getSelectedFile().toPath();
+
+        Path parent = chooseDirectory(
+                "Куда восстановить базу? Будет создана новая подпапка"
+        );
+
+        if (parent == null) {
+            return;
+        }
+
+        Path restored = DatabaseBackup.restore(archive, parent);
+
+        switchDatabase(restored);
+
+        JOptionPane.showMessageDialog(
+                this,
+                "База восстановлена и открыта:\n" + restored
+        );
+    }
+    private void deleteDatabase() throws IOException {
+        Path selected = chooseDirectory(
+                "Выбери папку базы, которую нужно удалить"
+        );
+
+        if (selected == null) {
+            return;
+        }
+
+        Path target = selected.toRealPath();
+
+        if (target.equals(currentDirectory)) {
+            throw new IllegalArgumentException(
+                    "Эта база сейчас открыта.\n"
+                            + "Сначала открой другую базу, затем удали эту."
+            );
+        }
+
+        Path dataPath = target.resolve("players.dat");
+        Path indexPath = target.resolve("players-id.idx");
+
+        if (!Files.isRegularFile(dataPath)
+                || !Files.isRegularFile(indexPath)) {
+            throw new IllegalArgumentException(
+                    "В выбранной папке нет файлов нашей базы"
+            );
+        }
+
+        // Проверяем содержимое папки.
+        // Чужие файлы и вложенные базы не удаляем.
+        try (java.nio.file.DirectoryStream<Path> entries =
+                     Files.newDirectoryStream(target)) {
+
+            for (Path entry : entries) {
+                String name = entry.getFileName().toString();
+
+                if (!name.equals("players.dat")
+                        && !name.equals("players-id.idx")) {
+                    throw new IllegalArgumentException(
+                            "В папке есть посторонние файлы или подпапки.\n"
+                                    + "Перемести их перед удалением базы."
+                    );
+                }
+            }
+        }
+
+        // Проверяем формат и доступность файлов.
+        try (PlayerDatabase checked = new PlayerDatabase(target)) {
+            checked.forEachPlayer(player -> {
+                // Читаем записи для проверки формата.
+            });
+            checked.save();
+        }
+
+        int answer = JOptionPane.showConfirmDialog(
+                this,
+                "Удалить базу?\n" + target
+                        + "\n\nПеред удалением будет создан ZIP-backup"
+                        + " рядом с её папкой.",
+                "Удаление базы данных",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE
+        );
+
+        if (answer != JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        Path backup = DatabaseBackup.create(target, target.getParent());
+
+        try {
+            Files.delete(dataPath);
+            Files.delete(indexPath);
+            Files.delete(target);
+        } catch (IOException exception) {
+            throw new IOException(
+                    "Не удалось полностью удалить базу.\n"
+                            + "Резервная копия сохранена:\n" + backup,
+                    exception
+            );
+        }
+
+        status.setText("База удалена. Backup: " + backup);
+
+        JOptionPane.showMessageDialog(
+                this,
+                "База удалена:\n" + target
+                        + "\n\nРезервная копия:\n" + backup
+        );
     }
     private void addPlayer() throws IOException {
         Player player = showPlayerForm(null);

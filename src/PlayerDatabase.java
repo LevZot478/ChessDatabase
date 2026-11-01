@@ -217,8 +217,47 @@ public final class PlayerDatabase implements Closeable {
         save();
     }
     /**
+     * Проверяет соответствие записей и индекса.
+     */
+    public long validate() throws IOException {
+        long players = 0;
+        long slots = storage.slotCount();
+
+        for (long slot = 0; slot < slots; slot++) {
+            Player player = storage.read(slot);
+
+            if (player == null) {
+                continue;
+            }
+
+            long indexedSlot = index.find(player.getId());
+
+            if (indexedSlot != slot) {
+                throw new IOException(
+                        "Нарушен индекс для ID " + player.getId()
+                                + ": запись находится в слоте " + slot
+                                + ", индекс содержит " + indexedSlot
+                );
+            }
+
+            players++;
+        }
+
+        long indexEntries = index.validateEntries(storage);
+
+        if (indexEntries != players) {
+            throw new IOException(
+                    "Количество записей и элементов индекса различается: "
+                            + players + " и " + indexEntries
+            );
+        }
+
+        return players;
+    }
+    /**
      * Сбрасывает изменения обоих файлов на устройство хранения.
      */
+
     public void save() throws IOException {
         storage.save();
         index.save();
