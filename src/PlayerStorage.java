@@ -16,7 +16,17 @@ public final class PlayerStorage implements Closeable {
     private static final long NO_SLOT = -1;
 
     private final RandomAccessFile file;
+    /**
+     * Удаляет все слоты и сбрасывает цепочку свободных мест.
+     */
+    public void clear() throws IOException {
+        file.setLength(HEADER_SIZE);
 
+        file.seek(0);
+        file.writeInt(MAGIC);
+        file.writeInt(VERSION);
+        file.writeLong(NO_SLOT);
+    }
     public PlayerStorage(Path path) throws IOException {
         file = new RandomAccessFile(path.toFile(), "rw");
 

@@ -141,7 +141,21 @@ public final class IdIndex implements Closeable {
 
         return true;
     }
+    /**
+     * Удаляет узлы индекса и очищает все корзины.
+     */
+    public void clear() throws IOException {
+        file.setLength(DATA_START);
 
+        file.seek(0);
+        file.writeInt(MAGIC);
+        file.writeInt(VERSION);
+        file.writeInt(BUCKETS);
+
+        for (int i = 0; i < BUCKETS; i++) {
+            file.writeLong(-1);
+        }
+    }
     public void save() throws IOException {
         file.getFD().sync();
     }

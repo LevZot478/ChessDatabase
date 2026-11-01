@@ -2,9 +2,11 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
- * Управляет записями участников и индексом по ID.
+ * Управляет файлом участников и индексом по ID.
  * Одна база хранится в отдельной папке.
  */
 public final class PlayerDatabase implements Closeable {
@@ -20,7 +22,9 @@ public final class PlayerDatabase implements Closeable {
         // Не создаём пустой индекс рядом с существующими данными.
         if (Files.exists(dataPath)
                 && Files.size(dataPath) > 16
-                && (!Files.exists(indexPath) || Files.size(indexPath) == 0)) {
+                && (!Files.exists(indexPath)
+                || Files.size(indexPath) == 0)) {
+
             throw new IOException(
                     "Отсутствует индекс существующей базы"
             );
@@ -30,6 +34,7 @@ public final class PlayerDatabase implements Closeable {
         if ((!Files.exists(dataPath) || Files.size(dataPath) == 0)
                 && Files.exists(indexPath)
                 && Files.size(indexPath) > 0) {
+
             throw new IOException(
                     "Есть индекс, но отсутствует файл данных"
             );
@@ -45,6 +50,10 @@ public final class PlayerDatabase implements Closeable {
         }
     }
 
+    /**
+     * Находит участника через индекс.
+     * Возвращает null, если ID отсутствует.
+     */
     public Player findById(int id) throws IOException {
         long slot = index.find(id);
 
@@ -61,6 +70,9 @@ public final class PlayerDatabase implements Closeable {
         return player;
     }
 
+    /**
+     * Добавляет участника с проверкой уникальности ID.
+     */
     public void add(Player player) throws IOException {
         requirePlayer(player);
 
@@ -75,8 +87,8 @@ public final class PlayerDatabase implements Closeable {
     }
 
     /**
-     * Изменяет запись. Разрешает изменить ID,
-     * если новый ID не занят другим участником.
+     * Изменяет запись. Новый ID должен быть свободен
+     * либо совпадать с прежним ID участника.
      */
     public void update(int oldId, Player replacement) throws IOException {
         requirePlayer(replacement);
@@ -102,28 +114,27 @@ public final class PlayerDatabase implements Closeable {
         }
     }
 
+    /**
+     * Удаляет участника по ID.
+     * Возвращает false, если участник отсутствует.
+     */
     public boolean deleteById(int id) throws IOException {
         if (findById(id) == null) {
             return false;
         }
 
         long slot = index.find(id);
+
         storage.delete(slot);
         index.delete(id);
 
         return true;
     }
 
-    public void save() throws IOException {
-        storage.save();
-        index.save();
-    }
     /**
      * Читает существующие записи по одной для отображения.
      */
-    public void forEachPlayer(java.util.function.Consumer<Player> action)
-            throws IOException {
-
+    public void forEachPlayer(Consumer<Player> action) throws IOException {
         long count = storage.slotCount();
 
         for (long slot = 0; slot < count; slot++) {
@@ -134,6 +145,85 @@ public final class PlayerDatabase implements Closeable {
             }
         }
     }
+
+    /**
+     * Ищет все записи с точным совпадением значения поля.
+     * Поиск по ID использует индекс.
+     */
+    public void search(
+            PlayerField field,
+            String value,
+            Consumer<Player> action
+    ) throws IOException {
+
+        if (field == PlayerField.ID) {
+            Player player = findById(Integer.parseInt(value.trim()));
+
+            if (player != null) {
+                action.accept(player);
+            }
+
+            return;
+        }
+
+        Predicate<Player> condition = field.condition(value);
+        long count = storage.slotCount();
+
+        for (long slot = 0; slot < count; slot++) {
+            Player player = storage.read(slot);
+
+            if (player != null && condition.test(player)) {
+                action.accept(player);
+            }
+        }
+    }
+
+    /**
+     * Удаляет все записи с точным совпадением значения поля.
+     * Возвращает количество удалённых записей.
+     */
+    public long deleteByField(PlayerField field, String value)
+            throws IOException {
+
+        if (field == PlayerField.ID) {
+            int id = Integer.parseInt(value.trim());
+            return deleteById(id) ? 1 : 0;
+        }
+
+        // Проверяем формат значения до начала удаления.
+        Predicate<Player> condition = field.condition(value);
+
+        long deleted = 0;
+        long count = storage.slotCount();
+
+        for (long slot = 0; slot < count; slot++) {
+            Player player = storage.read(slot);
+
+            if (player != null && condition.test(player)) {
+                if (deleteById(player.getId())) {
+                    deleted++;
+                }
+            }
+        }
+
+        return deleted;
+    }
+    /**
+     * Очищает данные и индекс.
+     */
+    public void clear() throws IOException {
+        storage.clear();
+        index.clear();
+        save();
+    }
+    /**
+     * Сбрасывает изменения обоих файлов на устройство хранения.
+     */
+    public void save() throws IOException {
+        storage.save();
+        index.save();
+    }
+
     private void requirePlayer(Player player) {
         if (player == null) {
             throw new IllegalArgumentException("Не указан участник");

@@ -37,13 +37,16 @@ public final class DatabaseWindow extends JFrame {
         table.setRowHeight(26);
         table.setFillsViewportHeight(true);
 
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JPanel buttons = new JPanel(new GridLayout(0, 4, 6, 6));
 
         addButton(buttons, "Добавить", this::addPlayer);
         addButton(buttons, "Найти по ID", this::findPlayer);
         addButton(buttons, "Показать всех", this::refresh);
+        addButton(buttons, "Поиск по полю", () -> fieldOperation(false));
+        addButton(buttons, "Удалить по полю", () -> fieldOperation(true));
         addButton(buttons, "Изменить", this::editPlayer);
         addButton(buttons, "Удалить", this::deletePlayer);
+        addButton(buttons, "Очистить БД", this::clearDatabase);
         addButton(buttons, "Сохранить", () -> {
             database.save();
             status.setText("Изменения сохранены");
@@ -113,7 +116,80 @@ public final class DatabaseWindow extends JFrame {
         database.forEachPlayer(this::addRow);
         status.setText("Записей показано: " + model.getRowCount());
     }
+    private void fieldOperation(boolean delete) throws IOException {
+        JComboBox<PlayerField> fieldBox =
+                new JComboBox<>(PlayerField.values());
 
+        JTextField valueInput = new JTextField();
+
+        JPanel form = new JPanel(new GridLayout(0, 2, 10, 10));
+        form.add(new JLabel("Поле:"));
+        form.add(fieldBox);
+        form.add(new JLabel("Точное значение:"));
+        form.add(valueInput);
+
+        int answer = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                delete ? "Удаление по полю" : "Поиск по полю",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE
+        );
+
+        if (answer != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        PlayerField field = (PlayerField) fieldBox.getSelectedItem();
+        String value = valueInput.getText();
+
+        // Проверяем формат значения до изменения таблицы или файла.
+        field.condition(value);
+
+        if (delete) {
+            int confirmation = JOptionPane.showConfirmDialog(
+                    this,
+                    "Удалить ВСЕ записи, где "
+                            + field + " = " + value.trim() + "?",
+                    "Подтверждение",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+            );
+
+            if (confirmation != JOptionPane.YES_OPTION) {
+                return;
+            }
+
+            long deleted = database.deleteByField(field, value);
+            database.save();
+            refresh();
+
+            status.setText("Удалено записей: " + deleted);
+        } else {
+            model.setRowCount(0);
+            database.search(field, value, this::addRow);
+
+            status.setText("Найдено записей: " + model.getRowCount());
+        }
+    }
+    private void clearDatabase() throws IOException {
+        int answer = JOptionPane.showConfirmDialog(
+                this,
+                "Удалить ВСЕ записи из текущей базы?\n"
+                        + "Это действие нельзя отменить.",
+                "Очистка базы",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE
+        );
+
+        if (answer != JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        database.clear();
+        refresh();
+        status.setText("База очищена");
+    }
     private void addPlayer() throws IOException {
         Player player = showPlayerForm(null);
 
