@@ -72,6 +72,7 @@ public final class DatabaseWindow extends JFrame {
         addButton(files, "Удалить БД", this::deleteDatabase);
         addButton(files, "Создать копию", this::createBackup);
         addButton(files, "Восстановить копию", this::restoreBackup);
+        addButton(files, "Выгрузить CSV", this::exportCsv);
 
         addButton(players, "Добавить", this::addPlayer);
         addButton(players, "Найти по ID", this::findPlayer);
@@ -391,6 +392,28 @@ public final class DatabaseWindow extends JFrame {
 
         status.setText("Открыта база: " + currentDirectory);
     }
+    private void exportCsv() throws IOException {
+        JFileChooser chooser = new JFileChooser(currentDirectory.getParent() == null
+                ? currentDirectory.toFile() : currentDirectory.getParent().toFile());
+        chooser.setDialogTitle("Выгрузить всех участников в новый CSV-файл");
+        chooser.setSelectedFile(new java.io.File("players.csv"));
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
+                "Таблица CSV (*.csv)", "csv"));
+        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        Path target = chooser.getSelectedFile().toPath();
+        if (!target.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".csv")) {
+            target = target.resolveSibling(target.getFileName() + ".csv");
+        }
+        if (Files.exists(target)) {
+            throw new IOException("Файл уже существует. Выбери новое имя для выгрузки.");
+        }
+        long count = DatabaseCsvExport.write(database, target);
+        status.setText("В CSV выгружено записей: " + count);
+        JOptionPane.showMessageDialog(this, "Выгружены все участники: " + count
+                + "\n" + target.toAbsolutePath()
+                + "\nФормат: UTF-8, разделитель — точка с запятой.");
+    }
+
     private void createBackup() throws IOException {
         Path parent = chooseDirectory(
                 "Выбери папку для резервной копии"
