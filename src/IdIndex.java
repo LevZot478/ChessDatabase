@@ -2,53 +2,170 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Файловый хеш-индекс: ID участника -> номер слота.
  * Коллизии разрешаются цепочками узлов на диске.
+ * При заполнении более 75% индекс расширяется; старый формат поддерживается.
  */
 public final class IdIndex implements Closeable {
     private static final int MAGIC = 0x49444958;
     private static final int VERSION = 1;
-    private static final int BUCKETS = 4099;
+    private static final int INITIAL_BUCKETS = 4099;
 
     private static final long HEADER_SIZE = 12;
-    private static final long DATA_START = HEADER_SIZE + BUCKETS * 8L;
+    
     private static final int NODE_SIZE = 20;
 
-    private final RandomAccessFile file;
+    private RandomAccessFile file;
+    private final Path path;
+    private int buckets;
+    private long dataStart;
+    private long entries;
 
     public IdIndex(Path path) throws IOException {
-        file = new RandomAccessFile(path.toFile(), "rw");
-
+        this.path = path.toAbsolutePath();
+        file = new RandomAccessFile(this.path.toFile(), "rw");
         try {
             if (file.length() == 0) {
-                file.writeInt(MAGIC);
-                file.writeInt(VERSION);
-                file.writeInt(BUCKETS);
-
-                for (int i = 0; i < BUCKETS; i++) {
-                    file.writeLong(-1);
-                }
+                initialize(INITIAL_BUCKETS);
             }
-
             file.seek(0);
-
-            if (file.length() < DATA_START
-                    || file.readInt() != MAGIC
-                    || file.readInt() != VERSION
-                    || file.readInt() != BUCKETS
-                    || (file.length() - DATA_START) % NODE_SIZE != 0) {
+            if (file.length() < HEADER_SIZE
+                    || file.readInt() != MAGIC || file.readInt() != VERSION) {
                 throw new IOException("Некорректный файл индекса");
             }
+            buckets = file.readInt();
+            dataStart = HEADER_SIZE + buckets * 8L;
+            if (buckets <= 0 || file.length() < dataStart
+                    || (file.length() - dataStart) % NODE_SIZE != 0) {
+                throw new IOException("Некорректный размер индекса");
+            }
+            entries = countEntries();
         } catch (IOException | RuntimeException exception) {
             file.close();
             throw exception;
         }
     }
 
+    private void initialize(int count) throws IOException {
+        buckets = count;
+        dataStart = HEADER_SIZE + buckets * 8L;
+        file.setLength(dataStart);
+        file.seek(0);
+        file.writeInt(MAGIC);
+        file.writeInt(VERSION);
+        file.writeInt(buckets);
+        for (int i = 0; i < buckets; i++) {
+            file.writeLong(-1);
+        }
+        entries = 0;
+    }
+
+    private void checkNode(long node) throws IOException {
+        if (node < dataStart || node > file.length() - NODE_SIZE
+                || (node - dataStart) % NODE_SIZE != 0) {
+            throw new IOException("Повреждён указатель индекса");
+        }
+    }
+
+    private long countEntries() throws IOException {
+        long count = 0;
+        long totalNodes = (file.length() - dataStart) / NODE_SIZE;
+        for (int bucket = 0; bucket < buckets; bucket++) {
+            long node = readPointer(HEADER_SIZE + bucket * 8L);
+            long remaining = totalNodes;
+            while (node != -1) {
+                checkNode(node);
+                if (remaining-- <= 0) {
+                    throw new IOException("Цикл в цепочке индекса");
+                }
+                file.seek(node);
+                int id = file.readInt();
+                long slot = file.readLong();
+                if (id <= 0 || slot < 0 || Math.floorMod(id, buckets) != bucket) {
+                    throw new IOException("Повреждён узел индекса");
+                }
+                node = file.readLong();
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Переносит доступные узлы в новый файл, по одному, без загрузки базы в память. */
+    private void grow() throws IOException {
+        if (buckets > (Integer.MAX_VALUE - 1) / 2) {
+            throw new IOException("Достигнут максимальный размер индекса");
+        }
+        int newBuckets = buckets * 2 + 1;
+        Path temporary = Files.createTempFile(path.getParent(), "index-grow-", ".tmp");
+        try {
+            try (IdIndex target = new IdIndex(temporary)) {
+                target.initialize(newBuckets);
+                long copied = 0;
+                long totalNodes = (file.length() - dataStart) / NODE_SIZE;
+                for (int bucket = 0; bucket < buckets; bucket++) {
+                    long node = readPointer(HEADER_SIZE + bucket * 8L);
+                    long remaining = totalNodes;
+                    while (node != -1) {
+                        checkNode(node);
+                        if (remaining-- <= 0) {
+                            throw new IOException("Цикл в цепочке индекса");
+                        }
+                        file.seek(node);
+                        int id = file.readInt();
+                        long slot = file.readLong();
+                        long next = file.readLong();
+                        target.prepend(id, slot);
+                        copied++;
+                        node = next;
+                    }
+                }
+                if (copied != entries) {
+                    throw new IOException("Число узлов изменилось при расширении");
+                }
+                target.save();
+            }
+            // На Windows открытый файл нельзя заменять, поэтому закрываем его.
+            // Если файловая система не поддерживает атомарную замену, исходник сохранится.
+            file.close();
+            try {
+                Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+                buckets = newBuckets;
+                dataStart = HEADER_SIZE + buckets * 8L;
+            } finally {
+                file = new RandomAccessFile(path.toFile(), "rw");
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private void prepend(int id, long slot) throws IOException {
+        long link = bucketPosition(id);
+        long previous = readPointer(link);
+        long node = file.length();
+        file.seek(node);
+        file.writeInt(id);
+        file.writeLong(slot);
+        file.writeLong(previous);
+        writePointer(link, node);
+    }
+
+    public int bucketCount() {
+        return buckets;
+    }
+
+    public long entryCount() {
+        return entries;
+    }
+
     private long bucketPosition(int id) {
-        return HEADER_SIZE + Math.floorMod(id, BUCKETS) * 8L;
+        return HEADER_SIZE + Math.floorMod(id, buckets) * 8L;
     }
 
     private long readPointer(long position) throws IOException {
@@ -67,7 +184,7 @@ public final class IdIndex implements Closeable {
      */
     private long findLink(int id) throws IOException {
         long link = bucketPosition(id);
-        long remaining = (file.length() - DATA_START) / NODE_SIZE;
+        long remaining = (file.length() - dataStart) / NODE_SIZE;
 
         while (true) {
             long node = readPointer(link);
@@ -77,9 +194,9 @@ public final class IdIndex implements Closeable {
             }
 
             if (remaining-- <= 0
-                    || node < DATA_START
+                    || node < dataStart
                     || node > file.length() - NODE_SIZE
-                    || (node - DATA_START) % NODE_SIZE != 0) {
+                    || (node - dataStart) % NODE_SIZE != 0) {
                 throw new IOException("Повреждена цепочка индекса");
             }
 
@@ -118,14 +235,11 @@ public final class IdIndex implements Closeable {
             throw new IllegalArgumentException("ID уже существует: " + id);
         }
 
-        long node = file.length();
-
-        file.seek(node);
-        file.writeInt(id);
-        file.writeLong(slot);
-        file.writeLong(-1);
-
-        writePointer(link, node);
+        if (entries + 1 > buckets * 3L / 4) {
+            grow();
+        }
+        prepend(id, slot);
+        entries++;
     }
 
     public boolean delete(int id) throws IOException {
@@ -138,6 +252,7 @@ public final class IdIndex implements Closeable {
 
         long next = readPointer(node + 12);
         writePointer(link, next);
+        entries--;
 
         return true;
     }
@@ -145,16 +260,7 @@ public final class IdIndex implements Closeable {
      * Удаляет узлы индекса и очищает все корзины.
      */
     public void clear() throws IOException {
-        file.setLength(DATA_START);
-
-        file.seek(0);
-        file.writeInt(MAGIC);
-        file.writeInt(VERSION);
-        file.writeInt(BUCKETS);
-
-        for (int i = 0; i < BUCKETS; i++) {
-            file.writeLong(-1);
-        }
+        initialize(INITIAL_BUCKETS);
     }
     /**
      * Проверяет, что каждый доступный узел индекса
@@ -164,17 +270,17 @@ public final class IdIndex implements Closeable {
      */
     public long validateEntries(PlayerStorage storage) throws IOException {
         long entries = 0;
-        long totalNodes = (file.length() - DATA_START) / NODE_SIZE;
+        long totalNodes = (file.length() - dataStart) / NODE_SIZE;
 
-        for (int bucket = 0; bucket < BUCKETS; bucket++) {
+        for (int bucket = 0; bucket < buckets; bucket++) {
             long node = readPointer(HEADER_SIZE + bucket * 8L);
             long remaining = totalNodes;
 
             while (node != -1) {
                 if (remaining-- <= 0
-                        || node < DATA_START
+                        || node < dataStart
                         || node > file.length() - NODE_SIZE
-                        || (node - DATA_START) % NODE_SIZE != 0) {
+                        || (node - dataStart) % NODE_SIZE != 0) {
                     throw new IOException(
                             "Повреждена цепочка индекса в корзине " + bucket
                     );
@@ -186,7 +292,7 @@ public final class IdIndex implements Closeable {
                 long slot = file.readLong();
                 long next = file.readLong();
 
-                if (id <= 0 || Math.floorMod(id, BUCKETS) != bucket) {
+                if (id <= 0 || Math.floorMod(id, buckets) != bucket) {
                     throw new IOException(
                             "ID находится в неправильной корзине: " + id
                     );
@@ -213,11 +319,6 @@ public final class IdIndex implements Closeable {
 
         return entries;
     }
-    /**
-     * Проверяет соответствие существующих записей и индекса.
-     * Возвращает количество участников.
-     */
-
     public void save() throws IOException {
         file.getFD().sync();
     }
