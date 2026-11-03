@@ -16,6 +16,11 @@ public final class DatabaseWindow extends JFrame {
             new Object[]{"ID", "Имя", "Рейтинг", "Взнос", "Дата", "Активен"}, 0
     ) {
         @Override
+        public Class<?> getColumnClass(int column) {
+            return new Class<?>[]{Integer.class, String.class, Integer.class,
+                    Double.class, LocalDate.class, Boolean.class}[column];
+        }
+        @Override
         public boolean isCellEditable(int row, int column) {
             return false;
         }
@@ -33,33 +38,54 @@ public final class DatabaseWindow extends JFrame {
         setSize(1100, 650);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-        setLayout(new BorderLayout(8, 8));
+        setMinimumSize(new Dimension(960, 600));
+        setLayout(new BorderLayout(16, 16));
+        ((JPanel) getContentPane()).setBorder(BorderFactory.createEmptyBorder(20, 20, 16, 20));
+        getContentPane().setBackground(new Color(245, 247, 250));
 
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setAutoCreateRowSorter(true);
-        table.setRowHeight(26);
+        table.setRowHeight(36);
+        table.setFont(new Font("SansSerif", Font.PLAIN, 14));
+        table.getTableHeader().setFont(new Font("SansSerif", Font.BOLD, 13));
+        table.getTableHeader().setPreferredSize(new Dimension(0, 38));
+        table.setShowVerticalLines(false);
+        table.setGridColor(new Color(230, 234, 240));
+        table.setSelectionBackground(new Color(218, 232, 252));
+        table.setSelectionForeground(new Color(24, 44, 70));
+        table.setIntercellSpacing(new Dimension(12, 1));
+        status.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
         table.setFillsViewportHeight(true);
 
-        JPanel buttons = new JPanel(new GridLayout(0, 4, 6, 6));
-        addButton(buttons, "Создать БД", this::createDatabase);
-        addButton(buttons, "Открыть БД", this::openDatabase);
-        addButton(buttons, "Удалить БД", this::deleteDatabase);
-        addButton(buttons, "Создать backup", this::createBackup);
-        addButton(buttons, "Восстановить backup", this::restoreBackup);
+        JPanel buttons = new JPanel();
+        buttons.setOpaque(false);
+        buttons.setLayout(new BoxLayout(buttons, BoxLayout.Y_AXIS));
+        JLabel heading = new JLabel("Шахматный клуб");
+        heading.setFont(new Font("SansSerif", Font.BOLD, 26));
+        buttons.add(heading);
+        buttons.add(Box.createVerticalStrut(12));
+        JPanel files = buttonGroup(buttons, "База и резервные копии");
+        JPanel players = buttonGroup(buttons, "Участники");
+        JPanel maintenance = buttonGroup(buttons, "Обслуживание");
+        addButton(files, "Создать БД", this::createDatabase);
+        addButton(files, "Открыть БД", this::openDatabase);
+        addButton(files, "Удалить БД", this::deleteDatabase);
+        addButton(files, "Создать копию", this::createBackup);
+        addButton(files, "Восстановить копию", this::restoreBackup);
 
-        addButton(buttons, "Добавить", this::addPlayer);
-        addButton(buttons, "Найти по ID", this::findPlayer);
-        addButton(buttons, "Показать всех", this::refresh);
-        addButton(buttons, "Поиск по полю", () -> fieldOperation(false));
-        addButton(buttons, "Удалить по полю", () -> fieldOperation(true));
-        addButton(buttons, "Изменить", this::editPlayer);
-        addButton(buttons, "Удалить", this::deletePlayer);
-        addButton(buttons, "Очистить БД", this::clearDatabase);
-        addButton(buttons, "Сохранить", () -> {
+        addButton(players, "Добавить", this::addPlayer);
+        addButton(players, "Найти по ID", this::findPlayer);
+        addButton(players, "Показать всех", this::refresh);
+        addButton(players, "Поиск по полю", () -> fieldOperation(false));
+        addButton(players, "Удалить по полю", () -> fieldOperation(true));
+        addButton(players, "Изменить", this::editPlayer);
+        addButton(players, "Удалить", this::deletePlayer);
+        addButton(maintenance, "Очистить БД", this::clearDatabase);
+        addButton(maintenance, "Сохранить", () -> {
             database.save();
             status.setText("Изменения сохранены");
         });
-        addButton(buttons, "Проверить БД", () -> {
+        addButton(maintenance, "Проверить БД", () -> {
             long count = database.validate();
 
             status.setText("Проверка пройдена. Участников: " + count);
@@ -99,8 +125,51 @@ public final class DatabaseWindow extends JFrame {
         }
     }
 
+    private static JPanel buttonGroup(JPanel parent, String title) {
+        JPanel group = new JPanel(new GridLayout(0, 4, 8, 8));
+        group.setOpaque(false);
+        group.setBorder(BorderFactory.createTitledBorder(title));
+        parent.add(group);
+        return group;
+    }
+
+    private static int integerValue(String text, String label, int min, int max) {
+        try {
+            int value = Integer.parseInt(text.trim());
+            if (value < min || value > max) throw new NumberFormatException();
+            return value;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(label + ": введи целое число от " + min + " до " + max);
+        }
+    }
+
+    private static double feeValue(String text) {
+        try {
+            double value = Double.parseDouble(text.trim().replace(',', '.'));
+            if (!Double.isFinite(value) || value < 0) throw new NumberFormatException();
+            return value;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Взнос: введи неотрицательное число, например 500 или 500,50");
+        }
+    }
+
+    private static void selectOnFocus(JTextField field) {
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent event) {
+                SwingUtilities.invokeLater(field::selectAll);
+            }
+        });
+    }
+
     private void addButton(JPanel panel, String text, UiAction action) {
         JButton button = new JButton(text);
+        button.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        button.setFocusPainted(false);
+        button.setMargin(new Insets(9, 12, 9, 12));
+        button.setBackground(Color.WHITE);
+        if (text.startsWith("Удалить") || text.startsWith("Очистить")) {
+            button.setForeground(new Color(165, 45, 45));
+        }
         button.addActionListener(event -> runAction(action));
         panel.add(button);
     }
@@ -489,7 +558,7 @@ public final class DatabaseWindow extends JFrame {
             return;
         }
 
-        Player player = database.findById(Integer.parseInt(input.trim()));
+        Player player = database.findById(integerValue(input, "ID", 1, Integer.MAX_VALUE));
 
         if (player == null) {
             JOptionPane.showMessageDialog(this, "Участник не найден");
@@ -562,10 +631,10 @@ public final class DatabaseWindow extends JFrame {
                 original == null ? "" : original.getName()
         );
         JTextField rating = new JTextField(
-                original == null ? "0" : String.valueOf(original.getRating())
+                original == null ? "" : String.valueOf(original.getRating())
         );
         JTextField fee = new JTextField(
-                original == null ? "0.0" : String.valueOf(original.getFee())
+                original == null ? "" : String.valueOf(original.getFee())
         );
         JTextField date = new JTextField(
                 original == null
@@ -573,7 +642,13 @@ public final class DatabaseWindow extends JFrame {
                         : original.getRegisteredOn().toString()
         );
 
-        JCheckBox active = new JCheckBox();
+        for (JTextField field : new JTextField[]{id, rating, fee, date}) {
+            selectOnFocus(field);
+            field.setColumns(20);
+        }
+        rating.setToolTipText("Целое число от 0 до 4000");
+        fee.setToolTipText("Например: 500 или 500,50");
+        JCheckBox active = new JCheckBox("Участник активен");
         active.setSelected(original == null || original.isActive());
 
         JPanel form = new JPanel(new GridLayout(0, 2, 10, 10));
@@ -606,12 +681,10 @@ public final class DatabaseWindow extends JFrame {
 
             try {
                 return new Player(
-                        Integer.parseInt(id.getText().trim()),
+                        integerValue(id.getText(), "ID", 1, Integer.MAX_VALUE),
                         name.getText(),
-                        Integer.parseInt(rating.getText().trim()),
-                        Double.parseDouble(
-                                fee.getText().trim().replace(',', '.')
-                        ),
+                        integerValue(rating.getText(), "Рейтинг", 0, 4000),
+                        feeValue(fee.getText()),
                         LocalDate.parse(date.getText().trim()),
                         active.isSelected()
                 );
